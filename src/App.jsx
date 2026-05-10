@@ -79,18 +79,18 @@ const FILE_TREE_TEMPLATE = () => [
   { path: "frontend/Dockerfile", icon: "🐋", label: "Dockerfile", category: "frontend" },
   { path: "frontend/nginx.conf", icon: "⚙️", label: "nginx.conf", category: "frontend" },
   { path: "frontend/package.json", icon: "📦", label: "package.json", category: "frontend" },
-  { path: "frontend/vite.config.ts", icon: "⚡", label: "vite.config.ts", category: "frontend" },
+  { path: "frontend/vite.config.js", icon: "⚡", label: "vite.config.js", category: "frontend" },
   { path: "frontend/tsconfig.json", icon: "📘", label: "tsconfig.json", category: "frontend" },
   { path: "frontend/tailwind.config.js", icon: "🎨", label: "tailwind.config.js", category: "frontend" },
   { path: "frontend/postcss.config.js", icon: "🔧", label: "postcss.config.js", category: "frontend" },
   { path: "frontend/index.html", icon: "🌐", label: "index.html", category: "frontend" },
-  { path: "frontend/src/main.tsx", icon: "🚀", label: "main.tsx", category: "frontend" },
-  { path: "frontend/src/App.tsx", icon: "⚛️", label: "App.tsx", category: "frontend" },
+  { path: "frontend/src/main.jsx", icon: "🚀", label: "main.jsx", category: "frontend" },
+  { path: "frontend/src/App.jsx", icon: "⚛️", label: "App.jsx", category: "frontend" },
   { path: "backend/Dockerfile", icon: "🐋", label: "Dockerfile", category: "backend" },
   { path: "backend/package.json", icon: "📦", label: "package.json", category: "backend" },
   { path: "backend/tsconfig.json", icon: "📘", label: "tsconfig.json", category: "backend" },
-  { path: "backend/src/index.ts", icon: "🖥️", label: "index.ts", category: "backend" },
-  { path: "backend/src/db.ts", icon: "🗄️", label: "db.ts", category: "backend" },
+  { path: "backend/src/index.js", icon: "🖥️", label: "index.js", category: "backend" },
+  { path: "backend/src/db.js", icon: "🗄️", label: "db.js", category: "backend" },
 ];
 
 const CATEGORY_COLORS = { root: "#f59e0b", frontend: "#38bdf8", backend: "#34d399" };
@@ -288,7 +288,7 @@ export default function App() {
         generated[f.path] = content;
         setGeneratedFiles(prev => ({ ...prev, [f.path]: content }));
         setGeneratingFile(null);
-        if (f.path === "frontend/src/App.tsx") setSelectedFile(f.path);
+        if (f.path === "frontend/src/App.jsx") setSelectedFile(f.path);
       }
 
       setBuildStep(BUILD_STEPS.length);
@@ -316,7 +316,7 @@ export default function App() {
         const content = await streamGenerateFile(filePath, spec, generatedFiles, (partial) => setGeneratedFiles(prev => ({ ...prev, [filePath]: partial })));
         setGeneratedFiles(prev => ({ ...prev, [filePath]: content }));
         setGeneratingFile(null);
-        if (filePath === selectedFile || filePath === "frontend/src/App.tsx") setSelectedFile(filePath);
+        if (filePath === selectedFile || filePath === "frontend/src/App.jsx") setSelectedFile(filePath);
       }
       setConversationHistory(prev => [...prev, { role: "user", content: userRequest }, { role: "assistant", content: `Updated: ${filesToUpdate.join(", ")}` }]);
       addMessage({ role: "assistant", type: "complete", content: `✅ Updated ${filesToUpdate.map(f => f.split("/").pop()).join(", ")}.\n\nRun \`docker compose up --build\` to apply. What else?` });
