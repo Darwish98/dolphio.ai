@@ -4,221 +4,51 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import Anthropic from "@anthropic-ai/sdk";
 import dotenv from "dotenv";
-import fs from "fs/promises";
-import path from "path";
-import { execSync } from "child_process";
 
 dotenv.config();
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
+  apiKey: process.env.ANTHROPIC_API_KEY, // never leaves this server
 });
 
-app.use(helmet());
+// ─── MIDDLEWARE ───────────────────────────────────────────────────────────────
 
-app.use(
-  cors({
-    origin: process.env.FRONTEND_URL || "http://localhost:5173",
-  })
-);
+app.use(helmet()); // security headers
+app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:5173" }));
+app.use(express.json({ limit: "1mb" }));
 
-app.use(express.json({ limit: "2mb" }));
-
+// Rate limit: 20 AI requests per user per minute
 const aiLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 30,
+  max: 20,
+  message: { error: "Too many requests. Please slow down." },
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+// ─── AUTH MIDDLEWARE ──────────────────────────────────────────────────────────
+// Replace this with your real auth (Clerk, Auth0, Supabase Auth, JWT, etc.)
 
 function requireAuth(req, res, next) {
   const token = req.headers.authorization?.replace("Bearer ", "");
 
   if (!token) {
-    return res.status(401).json({
-      error: "Unauthorized",
-    });
+    return res.status(401).json({ error: "Unauthorized" });
   }
 
-  req.user = {
-    id: token,
-    plan: "pro",
-  };
-
+  // TODO: verify JWT or session token here
+  // e.g. const user = await verifyJWT(token);
+  // For now, any token passes (replace before going live)
+  req.user = { id: token, plan: "pro" };
   next();
 }
 
-const FILE_RULES = {
-  "frontend/src/App.jsx":
-    "Main React application component",
-
-  "frontend/src/main.jsx":
-    "React entry point",
-
-  "backend/server.js":
-    "Express backend server",
-
-  "frontend/vite.config.js":
-    "Vite config",
-
-  "docker-compose.yml":
-    "Docker compose file",
-};
-
-function detectIncompleteCode(code) {
-  if (!code) return true;
-
-  const opens = (code.match(/{/g) || []).length;
-  const closes = (code.match(/}/g) || []).length;
-
-  return (
-    code.includes("TODO") ||
-    code.endsWith("{") ||
-    code.endsWith("(") ||
-    opens !== closes
-  );
-}
-
-function validateJavaScript(code) {
-  try {
-    new Function(code);
-    return {
-      valid: true,
-      errors: [],
-    };
-  } catch (err) {
-    return {
-      valid: false,
-      errors: [err.message],
-    };
-  }
-}
-
-async function generateFile({
-  filePath,
-  spec,
-  existingFiles,
-}) {
-  const relevantContext = Object.entries(existingFiles || {})
-    .slice(-2)
-    .map(([p, c]) => {
-      return `FILE: ${p}
-
-${String(c).slice(0, 1000)}
-`;
-    })
-    .join("\n\n");
-
-  const prompt = `
-APP SPEC:
-${JSON.stringify(spec, null, 2)}
-
-TARGET FILE:
-${filePath}
-
-FILE PURPOSE:
-${FILE_RULES[filePath] || "Application file"}
-
-RELATED FILES:
-${relevantContext}
-
-RULES:
-- JavaScript only
-- JSX only
-- Never use TypeScript
-- Never use interfaces
-- Never use type annotations
-- Complete file only
-- Must compile
-- Use relative imports correctly
-- No markdown
-- No explanations
-
-Generate ONLY the file.
-`;
-
-  const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 2500,
-
-    system: `
-You generate ONE production-ready file.
-
-CRITICAL RULES:
-- Output ONLY raw code
-- Never use markdown
-- Never explain
-- Never truncate code
-- Complete all functions
-- Never use TypeScript
-- Never output partial code
-- Never output placeholders
-- Prefer small modular components
-`,
-
-    messages: [
-      {
-        role: "user",
-        content: prompt,
-      },
-    ],
-  });
-
-  const text =
-    response.content.find((x) => x.type === "text")?.text || "";
-
-  return text.trim();
-}
-
-async function repairFile({
-  filePath,
-  code,
-  errors,
-}) {
-  const prompt = `
-FILE:
-${filePath}
-
-BROKEN CODE:
-${code}
-
-ERRORS:
-${errors.join("\n")}
-
-Fix the file.
-
-Rules:
-- Return FULL corrected file
-- No markdown
-- No explanations
-- JavaScript only
-`;
-
-  const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 2500,
-
-    system: `
-You repair broken code files.
-
-Return ONLY corrected code.
-`,
-
-    messages: [
-      {
-        role: "user",
-        content: prompt,
-      },
-    ],
-  });
-
-  return (
-    response.content.find((x) => x.type === "text")?.text || ""
-  ).trim();
-}
+// ─── HEALTH ───────────────────────────────────────────────────────────────────
 
 app.get("/health", (req, res) => {
   res.json({
@@ -228,181 +58,163 @@ app.get("/health", (req, res) => {
   });
 });
 
-app.post(
-  "/api/architect",
-  requireAuth,
-  aiLimiter,
-  async (req, res) => {
-    const { description } = req.body;
+// ─── ARCHITECT ENDPOINT ───────────────────────────────────────────────────────
+// Takes a plain-English app description, returns structured JSON architecture
 
-    if (!description?.trim()) {
-      return res.status(400).json({
-        error: "description required",
-      });
-    }
+app.post("/api/architect", requireAuth, aiLimiter, async (req, res) => {
+  const { description } = req.body;
 
-    try {
-      const message = await anthropic.messages.create({
-        model: "claude-sonnet-4-6",
-
-        max_tokens: 1200,
-
-        system: `
-You are an expert full-stack architect.
-
-Return ONLY valid JSON.
-
-Use:
-- React
-- Vite
-- JavaScript
-- JSX
-- Express
-- SQLite
-
-Never use TypeScript.
-`,
-
-        messages: [
-          {
-            role: "user",
-            content: description,
-          },
-        ],
-      });
-
-      const text =
-        message.content.find((b) => b.type === "text")?.text || "";
-
-      let spec;
-
-      try {
-        spec = JSON.parse(
-          text.replace(/```json|```/g, "").trim()
-        );
-      } catch (err) {
-        return res.status(500).json({
-          error: "Failed to parse architecture JSON",
-          raw: text,
-        });
-      }
-
-      res.json({ spec });
-    } catch (err) {
-      console.error(err);
-
-      res.status(500).json({
-        error: err.message,
-      });
-    }
+  if (!description?.trim()) {
+    return res.status(400).json({ error: "description is required" });
   }
-);
 
-app.post(
-  "/api/generate-file",
-  requireAuth,
-  aiLimiter,
-  async (req, res) => {
-    const {
-      filePath,
-      spec,
-      existingFiles = {},
-    } = req.body;
+  try {
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1024,
+      system: `You are an expert full-stack architect. Given an app description, output ONLY a JSON object (no markdown, no explanation) with this exact structure:
 
-    if (!filePath || !spec) {
-      return res.status(400).json({
-        error: "filePath and spec required",
-      });
+{
+  "appName": "my-app",
+  "description": "one line description",
+  "services": {
+    "frontend": { "tech": "React + Vite + TypeScript + Tailwind CSS", "port": 5173, "description": "what it does" },
+    "backend": { "tech": "Node.js + Express + TypeScript", "port": 3001, "description": "REST API endpoints" },
+    "database": { "tech": "PostgreSQL 16", "port": 5432, "description": "tables and schema overview" }
+  },
+  "features": ["feature1", "feature2"],
+  "apiRoutes": [
+    {"method": "GET", "path": "/api/items", "description": "list all items"},
+    {"method": "POST", "path": "/api/items", "description": "create item"}
+  ]
+}`,
+      messages: [{ role: "user", content: description }],
+    });
+
+    const text = message.content.find((b) => b.type === "text")?.text || "";
+
+    let spec;
+    try {
+      spec = JSON.parse(text.replace(/```json\n?|```/g, "").trim());
+    } catch {
+      return res.status(500).json({ error: "Failed to parse architecture JSON", raw: text });
     }
 
-    try {
-      let code = await generateFile({
-        filePath,
-        spec,
-        existingFiles,
-      });
+    res.json({ spec });
+  } catch (err) {
+    console.error("Architect error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
-      let validation = validateJavaScript(code);
+// ─── GENERATE FILE ENDPOINT (STREAMING) ───────────────────────────────────────
+// Streams file content back using SSE so the UI can show content as it arrives
 
+app.post("/api/generate-file", requireAuth, aiLimiter, async (req, res) => {
+  const { filePath, spec, existingFiles = {} } = req.body;
+
+  if (!filePath || !spec) {
+    return res.status(400).json({ error: "filePath and spec are required" });
+  }
+
+  // SSE headers — client receives chunks as they stream
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+
+  const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+  try {
+    const existingContext = Object.entries(existingFiles)
+      .slice(-3)
+      .map(([p, c]) => `// ${p}\n${String(c).slice(0, 400)}...`)
+      .join("\n\n");
+
+    const prompt = `App spec:\n${JSON.stringify(spec, null, 2)}\n\nAlready generated files (for context):\n${existingContext}\n\nNow generate the complete contents of: ${filePath}\n\nReturn ONLY the file content, nothing else.`;
+
+    const stream = anthropic.messages.stream({
+      model: "claude-sonnet-4-6",
+      max_tokens: 4096,
+      system: `You are an expert full-stack developer. Generate complete, production-ready file contents for a Docker-based full-stack app. Return ONLY raw file content — no markdown fences, no explanation.
+
+Rules:
+- frontend/src/App.tsx: Full React app with Tailwind CSS, beautiful UI, real API calls via fetch('/api/...')
+- frontend/vite.config.ts: proxy /api to http://backend:3001
+- frontend/Dockerfile: multi-stage build with nginx
+- frontend/nginx.conf: serve built app, proxy /api to backend:3001
+- backend/src/index.ts: Express app, all routes, CORS, PostgreSQL via pg library (host=db, port=5432, user=appuser, password=secret, database=appdb)
+- backend/src/db.ts: pg Pool, CREATE TABLE IF NOT EXISTS, seed data
+- backend/Dockerfile: node:20-alpine, ts-node
+- docker-compose.yml: frontend + backend + postgres:16-alpine with healthcheck, volumes, depends_on
+- All package.json files: correct deps, scripts
+Make the UI genuinely beautiful with gradients, shadows, animations.`,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    for await (const chunk of stream) {
       if (
-        !validation.valid ||
-        detectIncompleteCode(code)
+        chunk.type === "content_block_delta" &&
+        chunk.delta.type === "text_delta"
       ) {
-        code = await repairFile({
-          filePath,
-          code,
-          errors: validation.errors,
-        });
-
-        validation = validateJavaScript(code);
+        send({ type: "chunk", text: chunk.delta.text });
       }
-
-      res.json({
-        success: validation.valid,
-        code,
-        errors: validation.errors,
-      });
-    } catch (err) {
-      console.error(err);
-
-      res.status(500).json({
-        error: err.message,
-      });
     }
+
+    const final = await stream.finalMessage();
+    send({ type: "done", usage: final.usage });
+    res.end();
+  } catch (err) {
+    console.error("Generate file error:", err.message);
+    send({ type: "error", error: err.message });
+    res.end();
   }
-);
+});
 
-app.post(
-  "/api/repair-file",
-  requireAuth,
-  aiLimiter,
-  async (req, res) => {
-    const {
-      filePath,
-      code,
-      errors,
-    } = req.body;
+// ─── UPDATE FILES ENDPOINT ────────────────────────────────────────────────────
+// Given a change request, returns which files need updating
 
-    try {
-      const fixed = await repairFile({
-        filePath,
-        code,
-        errors,
-      });
+app.post("/api/plan-update", requireAuth, aiLimiter, async (req, res) => {
+  const { userRequest, spec, filePaths, conversationHistory = [] } = req.body;
 
-      const validation =
-        validateJavaScript(fixed);
-
-      res.json({
-        success: validation.valid,
-        code: fixed,
-        errors: validation.errors,
-      });
-    } catch (err) {
-      res.status(500).json({
-        error: err.message,
-      });
-    }
+  if (!userRequest || !spec || !filePaths) {
+    return res.status(400).json({ error: "userRequest, spec, and filePaths are required" });
   }
-);
 
-app.post(
-  "/api/verify-file",
-  requireAuth,
-  aiLimiter,
-  async (req, res) => {
-    const { code } = req.body;
+  try {
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 512,
+      system:
+        "You are a code update planner. Given an app and a change request, list which files need updating. Return ONLY file paths, one per line, no explanation, no bullet points.",
+      messages: [
+        ...conversationHistory,
+        {
+          role: "user",
+          content: `Current app spec:\n${JSON.stringify(spec, null, 2)}\n\nUser wants to: ${userRequest}\n\nWhich files need to be regenerated? Choose from:\n${filePaths.join("\n")}`,
+        },
+      ],
+    });
 
-    const validation =
-      validateJavaScript(code);
+    const text = message.content.find((b) => b.type === "text")?.text || "";
+    const files = text
+      .trim()
+      .split("\n")
+      .map((l) => l.trim().replace(/^[-*•]\s*/, ""))
+      .filter((l) => filePaths.includes(l));
 
-    res.json(validation);
+    res.json({ filesToUpdate: files });
+  } catch (err) {
+    console.error("Plan update error:", err.message);
+    res.status(500).json({ error: err.message });
   }
-);
+});
+
+// ─── START ────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
-  console.log(`
-🚀 Dolphio API running
-http://localhost:${PORT}
-`);
+  console.log(`\n🚀 DockerForge API running on http://localhost:${PORT}`);
+  console.log(`   Anthropic key set: ${!!process.env.ANTHROPIC_API_KEY}`);
+  console.log(`   Frontend allowed:  ${process.env.FRONTEND_URL || "http://localhost:5173"}`);
+  console.log(`   Health:            http://localhost:${PORT}/health\n`);
 });
